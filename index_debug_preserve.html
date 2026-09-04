@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OSA Number Sorter</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+<style>
+:root{
+  --bg:#0a0f1d; --card:#121a2c; --card2:#182238; --line:rgba(255,255,255,.08);
+  --text:#f4f7ff; --muted:#93a0b8; --accent:#7396ff; --accent2:#8b72ff; --green:#43d99a;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; min-height:100vh;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;
+  background:
+    radial-gradient(circle at 15% 0%,rgba(115,150,255,.18),transparent 32%),
+    radial-gradient(circle at 90% 10%,rgba(139,114,255,.15),transparent 30%),
+    linear-gradient(180deg,#0a0f1d,#0d1424);
+  color:var(--text);
+}
+.wrap{max-width:1120px;margin:auto;padding:52px 20px 70px}
+.hero{margin-bottom:22px}
+h1{font-size:34px;margin:0 0 8px;letter-spacing:-.7px}
+.desc{color:var(--muted);line-height:1.7}
+.panel{
+  background:rgba(18,26,44,.92);
+  border:1px solid var(--line);
+  border-radius:26px;
+  padding:28px;
+  box-shadow:0 22px 70px rgba(0,0,0,.28);
+}
+.drop{
+  display:block; cursor:pointer; text-align:center;
+  padding:44px 20px; border:1.5px dashed rgba(115,150,255,.5);
+  border-radius:20px; background:rgba(115,150,255,.05);
+  transition:.2s;
+}
+.drop:hover,.drop.drag{transform:translateY(-2px);background:rgba(115,150,255,.1);border-color:var(--accent)}
+.dropIcon{
+  width:60px;height:60px;border-radius:18px;margin:0 auto 15px;
+  display:grid;place-items:center;font-size:28px;font-weight:800;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:0 10px 28px rgba(115,150,255,.25)
+}
+.drop strong{display:block;font-size:19px;margin-bottom:7px}
+input{display:none}
+.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
+button{
+  border:0;border-radius:13px;padding:12px 17px;font-weight:750;font-size:14px;cursor:pointer
+}
+.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.secondary{background:#202b43;color:#e7ecf7;border:1px solid var(--line)}
+button:disabled{opacity:.38;cursor:not-allowed}
+.status{
+  margin-top:16px;padding:13px 15px;border-radius:13px;background:#151e31;
+  color:#cad3e5;border:1px solid var(--line);line-height:1.5
+}
+.bad{color:#ffd1a1;background:rgba(255,166,82,.08)}
+.folder{
+  margin-top:18px;overflow:hidden;border-radius:18px;border:1px solid var(--line);background:var(--card2)
+}
+.folderTitle{padding:14px 16px;font-weight:750;border-bottom:1px solid var(--line)}
+.folderTitle span{color:var(--green);margin-right:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:10px 13px;text-align:left;border-top:1px solid rgba(255,255,255,.05)}
+th{color:#8290aa;background:#121a2c;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.new{color:var(--green);font-weight:800}
+.note{margin-top:18px;color:#7f8aa0;font-size:12px;line-height:1.7;text-align:center}
+code{background:#202a42;padding:2px 6px;border-radius:6px;color:#dce5ff}
+</style>
+</head>
+
+<body>
+<div class="wrap">
+  <div class="hero">
+    <h1>OSA Number Sorter</h1>
+    <div class="desc">
+      只看 CSV 檔名最後的數字排序。每個資料夾獨立重新從 <b>1.csv</b> 開始；其他檔案全部保留原檔名。<br>
+      例如 <code>data_085.csv</code>、<code>data_086.csv</code>、<code>data_087.csv</code>
+      → <b>1.csv、2.csv、3.csv</b>。
+    </div>
+  </div>
+
+  <div class="panel">
+    <label class="drop" id="drop">
+      <div class="dropIcon">⇧</div>
+      <strong>拖曳一個或多個資料夾到這裡</strong>
+      或點一下選擇資料夾
+      <input id="picker" type="file" webkitdirectory directory multiple>
+    </label>
+
+    <div class="actions">
+      <button class="secondary" id="clear" disabled>重新選擇</button>
+      <button class="primary" id="download" disabled>下載重新編號 ZIP</button>
+    </div>
+
+    <div id="status" class="status">尚未選擇資料夾。</div>
+    <div id="result"></div>
+
+    <div class="note">
+      處理條件：檔名最後必須是數字再接 <code>.csv</code>。例如 085.csv、ABC_292.csv 都會處理；
+      PBS.csv、085_test.csv 不重新編號，但會以原檔名完整保留在 ZIP 裡。
+    </div>
+  </div>
+</div>
+
+<script>
+const pattern = /(\d+)\.csv$/i;
+const groups = new Map();
+
+const picker = document.getElementById('picker');
+const drop = document.getElementById('drop');
+const clearBtn = document.getElementById('clear');
+const downloadBtn = document.getElementById('download');
+const statusBox = document.getElementById('status');
+const result = document.getElementById('result');
+
+picker.addEventListener('change', () => addFiles([...picker.files]));
+
+['dragenter','dragover'].forEach(type=>{
+  drop.addEventListener(type,e=>{
+    e.preventDefault();
+    drop.classList.add('drag');
+  });
+});
+['dragleave','drop'].forEach(type=>{
+  drop.addEventListener(type,e=>{
+    e.preventDefault();
+    drop.classList.remove('drag');
+  });
+});
+
+drop.addEventListener('drop', async e=>{
+  const all = [];
+  const items = [...e.dataTransfer.items];
+
+  if(items.length && items[0].webkitGetAsEntry){
+    for(const item of items){
+      const entry = item.webkitGetAsEntry();
+      if(entry) await walk(entry,'',all);
+    }
+    addFiles(all);
+  } else {
+    addFiles([...e.dataTransfer.files]);
+  }
+});
+
+async function walk(entry,path,out){
+  if(entry.isFile){
+    await new Promise(resolve=>{
+      entry.file(file=>{
+        file._folderPath = path || 'OSA_Data';
+        out.push(file);
+        resolve();
+      });
+    });
+  } else if(entry.isDirectory){
+    const newPath = path ? path + '/' + entry.name : entry.name;
+    const reader = entry.createReader();
+
+    while(true){
+      const entries = await new Promise(resolve=>reader.readEntries(resolve));
+      if(!entries.length) break;
+      for(const child of entries) await walk(child,newPath,out);
+    }
+  }
+}
+
+function bubbleSort(arr){
+  const a = [...arr];
+
+  for(let i=0;i<a.length-1;i++){
+    let changed = false;
+
+    for(let j=0;j<a.length-1-i;j++){
+      if(a[j].number > a[j+1].number){
+        [a[j],a[j+1]] = [a[j+1],a[j]];
+        changed = true;
+      }
+    }
+
+    if(!changed) break;
+  }
+
+  return a;
+}
+
+function addFiles(files){
+  groups.clear();
+
+  for(const file of files){
+    let folder =
+      file._folderPath ||
+      (file.webkitRelativePath
+        ? file.webkitRelativePath.split('/').slice(0,-1).join('/')
+        : 'OSA_Data');
+
+    if(!folder) folder = 'OSA_Data';
+
+    if(!groups.has(folder)){
+      groups.set(folder,{
+        renamable:[],
+        preserved:[]
+      });
+    }
+
+    const match = file.name.match(pattern);
+
+    if(match){
+      groups.get(folder).renamable.push({
+        file,
+        original:file.name,
+        number:Number(match[1])
+      });
+    }else{
+      groups.get(folder).preserved.push({
+        file,
+        original:file.name
+      });
+    }
+  }
+
+  for(const [folder,data] of groups){
+    data.renamable = bubbleSort(data.renamable);
+  }
+
+  render();
+
+  const renamedTotal = [...groups.values()]
+    .reduce((sum,g)=>sum+g.renamable.length,0);
+
+  const preservedTotal = [...groups.values()]
+    .reduce((sum,g)=>sum+g.preserved.length,0);
+
+  const allTotal = renamedTotal + preservedTotal;
+
+  if(allTotal===0){
+    statusBox.className='status bad';
+    statusBox.textContent='沒有讀取到任何檔案。';
+    clearBtn.disabled=false;
+    downloadBtn.disabled=true;
+    return;
+  }
+
+  statusBox.className='status';
+  statusBox.textContent =
+    `已讀取 ${groups.size} 個資料夾，共 ${allTotal} 個檔案。` +
+    ` ${renamedTotal} 個會重新編號，${preservedTotal} 個會保留原檔名。`;
+
+  clearBtn.disabled=false;
+  downloadBtn.disabled=false;
+}
+
+function render(){
+  result.innerHTML='';
+
+  [...groups.entries()].forEach(([folder,data])=>{
+    const box=document.createElement('div');
+    box.className='folder';
+
+    const renamedRows = data.renamable.map((item,index)=>`
+      <tr>
+        <td>${index+1}</td>
+        <td>${escapeHtml(item.original)}</td>
+        <td>${item.number}</td>
+        <td class="new">${index+1}.csv</td>
+      </tr>
+    `).join('');
+
+    const preservedRows = data.preserved.map((item)=>`
+      <tr>
+        <td>—</td>
+        <td>${escapeHtml(item.original)}</td>
+        <td>—</td>
+        <td>${escapeHtml(item.original)} <span style="color:#93a0b8">(保留)</span></td>
+      </tr>
+    `).join('');
+
+    const total = data.renamable.length + data.preserved.length;
+
+    box.innerHTML=`
+      <div class="folderTitle">
+        <span>●</span>${escapeHtml(folder)} — ${total} 個檔案
+        <div style="margin-top:6px;color:#93a0b8;font-size:12px;font-weight:500">
+          ${data.renamable.length} 個重新編號 · ${data.preserved.length} 個保留原檔名
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>順序</th>
+            <th>原始檔名</th>
+            <th>最後數字</th>
+            <th>輸出檔名</th>
+          </tr>
+        </thead>
+        <tbody>${renamedRows}${preservedRows}</tbody>
+      </table>
+    `;
+
+    result.appendChild(box);
+  });
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g,c=>({
+    '&':'&amp;',
+    '<':'&lt;',
+    '>':'&gt;',
+    '"':'&quot;',
+    "'":'&#039;'
+  })[c]);
+}
+
+clearBtn.addEventListener('click',()=>{
+  groups.clear();
+  picker.value='';
+  result.innerHTML='';
+  statusBox.className='status';
+  statusBox.textContent='尚未選擇資料夾。';
+  clearBtn.disabled=true;
+  downloadBtn.disabled=true;
+});
+
+downloadBtn.addEventListener('click', async ()=>{
+  if(typeof JSZip === 'undefined' || typeof saveAs === 'undefined'){
+    statusBox.className='status bad';
+    statusBox.textContent='下載元件沒有載入。請確認目前有網路連線，或改用 Chrome / Edge 開啟這個網頁。';
+    return;
+  }
+
+  downloadBtn.disabled=true;
+  downloadBtn.textContent='正在建立 ZIP…';
+  statusBox.className='status';
+  statusBox.textContent='正在建立 ZIP，請不要關閉頁面。';
+
+  try{
+    const zip = new JSZip();
+
+    for(const [folder,data] of groups){
+      const zfolder = zip.folder(folder);
+
+      // 1) 符合規則的 CSV：依最後數字排序後重新命名為 1.csv, 2.csv, ...
+      for(let i=0;i<data.renamable.length;i++){
+        const buffer = await data.renamable[i].file.arrayBuffer();
+        zfolder.file(`${i+1}.csv`,buffer);
+      }
+
+      // 2) 不符合重新編號規則的檔案：原檔名、原內容完整保留
+      for(const item of data.preserved){
+        const buffer = await item.file.arrayBuffer();
+        zfolder.file(item.original,buffer);
+      }
+    }
+
+    const blob = await zip.generateAsync({
+      type:'blob',
+      compression:'DEFLATE',
+      compressionOptions:{level:6}
+    });
+
+    saveAs(blob,'OSA_Renumbered_Folders.zip');
+
+    statusBox.className='status';
+    statusBox.textContent='ZIP 已建立並送出下載。請查看瀏覽器的下載項目。';
+  }catch(err){
+    statusBox.className='status bad';
+    statusBox.textContent='建立或下載失敗：' + err.message;
+  }finally{
+    downloadBtn.disabled=false;
+    downloadBtn.textContent='下載重新編號 ZIP';
+  }
+});
+</script>
+</body>
+</html>
